@@ -37,6 +37,14 @@ def test_source_localizes_items_and_traders() -> None:
                 "MOD_MAGAZINE": "Магазин",
             }
         },
+        "/regular/items_zh": {
+            "data": {
+                "item-1 Name": "中文物品",
+                "item-1 ShortName": "中文",
+                "item-1 Description": "中文描述",
+                "MOD_MAGAZINE": "弹匣",
+            }
+        },
         "/regular/traders": {
             "data": {
                 "trader-1": {
@@ -77,5 +85,10 @@ def test_source_localizes_items_and_traders() -> None:
         assert bundle.items[0]["description"] == "English description"
         assert bundle.items[0]["properties"]["slotName"] == "Магазин"
         assert bundle.traders[0]["name"] == "Русский торговец"
+        assert bundle.item_translations["item-1"] == {
+            "ru": {"name": "Русский предмет", "short_name": "РУ"},
+            "en": {"name": "English item", "short_name": "EN"},
+            "zh": {"name": "中文物品", "short_name": "中文"},
+        }
 
     asyncio.run(run())

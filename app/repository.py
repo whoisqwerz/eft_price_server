@@ -9,7 +9,14 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.database import Database
-from app.models import Item, PriceOffer, PriceSnapshot, SyncRun, Trader
+from app.models import (
+    Item,
+    ItemTranslation,
+    PriceOffer,
+    PriceSnapshot,
+    SyncRun,
+    Trader,
+)
 from app.source import SourceBundle
 
 
@@ -91,6 +98,12 @@ class Repository:
         item_rows: list[dict[str, Any]] = []
         offer_rows: list[dict[str, Any]] = []
         trader_rows = self._trader_rows(bundle.traders, game_mode, language, now)
+        translation_rows = self._item_translation_rows(
+            bundle,
+            game_mode,
+            language,
+            now,
+        )
 
         with self.database.session() as session:
             existing = dict(
@@ -114,6 +127,8 @@ class Repository:
 
             if item_rows:
                 self._upsert_items(session, item_rows)
+            if translation_rows:
+                self._upsert_item_translations(session, translation_rows)
             if trader_rows:
                 self._upsert_traders(session, trader_rows)
 
@@ -229,6 +244,69 @@ class Repository:
             ),
             rows,
         )
+
+    @staticmethod
+    def _upsert_item_translations(
+        session: Session,
+        rows: list[dict[str, Any]],
+    ) -> None:
+        statement = sqlite_insert(ItemTranslation)
+        session.execute(
+            statement.on_conflict_do_update(
+                index_elements=[
+                    ItemTranslation.item_id,
+                    ItemTranslation.game_mode,
+                    ItemTranslation.language,
+                ],
+                set_={
+                    "name": statement.excluded.name,
+                    "short_name": statement.excluded.short_name,
+                    "synced_at": statement.excluded.synced_at,
+                },
+            ),
+            rows,
+        )
+
+    @staticmethod
+    def _item_translation_rows(
+        bundle: SourceBundle,
+        game_mode: str,
+        default_language: str,
+        now: datetime,
+    ) -> list[dict[str, Any]]:
+        translations = bundle.item_translations
+        if not translations:
+            translations = {
+                str(item.get("id")): {
+                    default_language: {
+                        "name": str(item.get("name") or item.get("id") or ""),
+                        "short_name": str(
+                            item.get("shortName")
+                            or item.get("name")
+                            or item.get("id")
+                            or ""
+                        ),
+                    }
+                }
+                for item in bundle.items
+                if item.get("id")
+            }
+
+        rows: list[dict[str, Any]] = []
+        for item_id, localized_values in translations.items():
+            for language, values in localized_values.items():
+                name = str(values.get("name") or item_id)
+                rows.append(
+                    {
+                        "item_id": item_id,
+                        "game_mode": game_mode,
+                        "language": language,
+                        "name": name,
+                        "short_name": str(values.get("short_name") or name),
+                        "synced_at": now,
+                    }
+                )
+        return rows
 
     @staticmethod
     def _trader_rows(

@@ -97,6 +97,26 @@ class Item(Base):
     )
 
 
+class ItemTranslation(Base):
+    __tablename__ = "item_translations"
+
+    item_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    game_mode: Mapped[str] = mapped_column(String(24), primary_key=True)
+    language: Mapped[str] = mapped_column(String(8), primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    short_name: Mapped[str] = mapped_column(Text, nullable=False)
+    synced_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_item_translations_mode_language_name",
+            "game_mode",
+            "language",
+            "name",
+        ),
+    )
+
+
 class Trader(Base):
     __tablename__ = "traders"
 

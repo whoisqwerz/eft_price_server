@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     tarkov_source_base_url: str = "https://json.tarkov.dev"
     tarkov_game_mode: GameMode = "regular"
     tarkov_language: Language = "ru"
+    tarkov_translation_languages: str = "ru,en,zh"
 
     sync_interval_seconds: int = Field(default=3600, ge=60)
     sync_on_startup: bool = True
@@ -67,6 +68,16 @@ class Settings(BaseSettings):
     @property
     def source_base_url(self) -> str:
         return self.tarkov_source_base_url.rstrip("/")
+
+    @property
+    def translation_languages(self) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                language.strip().lower()
+                for language in self.tarkov_translation_languages.split(",")
+                if language.strip()
+            )
+        )
 
 
 @lru_cache

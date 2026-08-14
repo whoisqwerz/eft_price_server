@@ -13,7 +13,14 @@ from app.cache import CacheBackend, RedisResponseCache
 from app.cache_middleware import RedisCacheMiddleware
 from app.config import Settings, get_settings
 from app.database import Database
-from app.models import Item, PriceOffer, PriceSnapshot, SyncRun, Trader
+from app.models import (
+    Item,
+    ItemTranslation,
+    PriceOffer,
+    PriceSnapshot,
+    SyncRun,
+    Trader,
+)
 from app.repository import Repository
 from app.schemas import (
     BestTraderPrice,
@@ -26,6 +33,7 @@ from app.schemas import (
     ItemDetail,
     ItemListResponse,
     ItemSummary,
+    LocalizedNames,
     Pagination,
     PriceHistoryResponse,
     PriceOfferOut,
@@ -116,6 +124,7 @@ def create_app(
         language=settings.tarkov_language,
         timeout_seconds=settings.request_timeout_seconds,
         user_agent=settings.user_agent,
+        translation_languages=settings.translation_languages,
     )
 
     response_cache = cache
@@ -124,7 +133,8 @@ def create_app(
             url=settings.redis_url,
             namespace=(
                 f"{settings.redis_cache_prefix}:"
-                f"{settings.tarkov_game_mode}:{settings.tarkov_language}"
+                f"{settings.tarkov_game_mode}:{settings.tarkov_language}:"
+                f"{'-'.join(settings.translation_languages)}"
             ),
             ttl_seconds=settings.redis_cache_ttl_seconds,
             max_response_bytes=settings.redis_cache_max_response_bytes,
@@ -544,32 +554,105 @@ def create_app(
     def export_compact_prices(
         session: Annotated[Session, Depends(get_session)],
     ) -> list[CompactItemExport]:
-        rows = session.execute(
+        item_rows = list(
+            session.execute(
+                select(
+                    Item.id,
+                    Item.types,
+                    Item.normalized_name,
+                    Item.name,
+                    Item.short_name,
+                    Item.base_price,
+                    Item.avg_24h_price,
+                    Item.best_trader_sell_price,
+                )
+                .where(
+                    Item.game_mode == settings.tarkov_game_mode,
+                    Item.active.is_(True),
+                )
+                .order_by(Item.id)
+            )
+        )
+        translation_rows = session.execute(
             select(
-                Item.id,
-                Item.types,
-                Item.base_price,
-                Item.avg_24h_price,
-                Item.best_trader_sell_price,
+                ItemTranslation.item_id,
+                ItemTranslation.language,
+                ItemTranslation.name,
+                ItemTranslation.short_name,
             )
             .where(
-                Item.game_mode == settings.tarkov_game_mode,
-                Item.active.is_(True),
+                ItemTranslation.game_mode == settings.tarkov_game_mode,
+                ItemTranslation.language.in_(("ru", "en", "zh")),
             )
-            .order_by(Item.id)
         )
-        return [
-            CompactItemExport(
-                id=row.id,
-                types=row.types,
-                prices=CompactPrices(
-                    base=row.base_price,
-                    avg24=row.avg_24h_price,
-                    best_trader_price=row.best_trader_sell_price,
-                ),
+
+        translations: dict[str, dict[str, dict[str, str]]] = {}
+        for translation in translation_rows:
+            translations.setdefault(translation.item_id, {})[
+                translation.language
+            ] = {
+                "name": translation.name,
+                "short_name": translation.short_name,
+            }
+
+        def localized_names(
+            item_id: str,
+            field: str,
+            fallback: str,
+        ) -> LocalizedNames:
+            item_values = translations.get(item_id, {})
+
+            def value(language: str) -> str:
+                return (
+                    item_values.get(language, {}).get(field)
+                    or item_values.get("en", {}).get(field)
+                    or fallback
+                )
+
+            return LocalizedNames(
+                ru=value("ru"),
+                en=value("en"),
+                zh=value("zh"),
             )
-            for row in rows
-        ]
+
+        result: list[CompactItemExport] = []
+        for row in item_rows:
+            names = localized_names(row.id, "name", row.name)
+            short_names = localized_names(
+                row.id,
+                "short_name",
+                row.short_name,
+            )
+            search_parts = dict.fromkeys(
+                value.strip().casefold()
+                for value in (
+                    row.id,
+                    row.normalized_name,
+                    names.ru,
+                    names.en,
+                    names.zh,
+                    short_names.ru,
+                    short_names.en,
+                    short_names.zh,
+                )
+                if value and value.strip()
+            )
+            result.append(
+                CompactItemExport(
+                    id=row.id,
+                    types=row.types,
+                    is_noflea="noFlea" in row.types,
+                    search_text=" ".join(search_parts),
+                    name=names,
+                    short_name=short_names,
+                    prices=CompactPrices(
+                        base=row.base_price,
+                        avg24=row.avg_24h_price,
+                        best_trader_price=row.best_trader_sell_price,
+                    ),
+                )
+            )
+        return result
 
     return app
 

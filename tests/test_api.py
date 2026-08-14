@@ -15,7 +15,7 @@ ITEM = {
     "shortName": "Тест",
     "normalizedName": "test-item",
     "description": "Описание",
-    "types": ["barter"],
+    "types": ["barter", "noFlea"],
     "categories": ["category-1"],
     "handbookCategories": ["handbook-1"],
     "properties": {"quality": 10},
@@ -77,6 +77,22 @@ class FakeSource:
             traders=[deepcopy(TRADER)],
             fetched_at=datetime.now(UTC),
             source_url="https://example.test/regular/items",
+            item_translations={
+                "item-1": {
+                    "ru": {
+                        "name": "Тестовый предмет",
+                        "short_name": "Тест",
+                    },
+                    "en": {
+                        "name": "Test item",
+                        "short_name": "Test",
+                    },
+                    "zh": {
+                        "name": "测试物品",
+                        "short_name": "测试",
+                    },
+                }
+            },
         )
 
     async def fetch(self) -> SourceBundle:
@@ -186,7 +202,22 @@ def test_sync_search_detail_history_and_export(tmp_path) -> None:
         assert compact.json() == [
             {
                 "id": "item-1",
-                "types": ["barter"],
+                "types": ["barter", "noFlea"],
+                "is_noflea": True,
+                "search_text": (
+                    "item-1 test-item тестовый предмет test item 测试物品 "
+                    "тест test 测试"
+                ),
+                "name": {
+                    "ru": "Тестовый предмет",
+                    "en": "Test item",
+                    "zh": "测试物品",
+                },
+                "shortName": {
+                    "ru": "Тест",
+                    "en": "Test",
+                    "zh": "测试",
+                },
                 "prices": {
                     "base": 1000,
                     "avg24": 2200,
@@ -195,6 +226,9 @@ def test_sync_search_detail_history_and_export(tmp_path) -> None:
             }
         ]
         assert client.get("/api/v1/export/prices").headers["x-cache"] == "HIT"
+        openapi_paths = client.get("/openapi.json").json()["paths"]
+        assert "/api/v1/export/items" in openapi_paths
+        assert "/api/v1/export/prices" in openapi_paths
 
         assert len(client.get("/api/v1/items/item-1/history").json()["points"]) == 1
 

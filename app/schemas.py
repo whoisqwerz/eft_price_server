@@ -155,7 +155,19 @@ class CompactPrices(BaseModel):
     best_trader_price: int | None = None
 
 
+class LocalizedNames(BaseModel):
+    ru: str
+    en: str
+    zh: str
+
+
 class CompactItemExport(BaseModel):
     id: str
     types: list[str]
+    is_noflea: bool
+    search_text: str
+    name: LocalizedNames
+    short_name: LocalizedNames = Field(alias="shortName")
     prices: CompactPrices
+
+    model_config = ConfigDict(populate_by_name=True)

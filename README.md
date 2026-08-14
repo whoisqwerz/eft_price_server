@@ -109,6 +109,8 @@ GET /api/v1/export/items?format=list
 GET /api/v1/export/prices
 ```
 
+Это отдельный endpoint: полный `/api/v1/export/items` сохранён без изменений.
+
 Ответ — обычный JSON-массив без метаданных и лишних полей:
 
 ```json
@@ -116,6 +118,18 @@ GET /api/v1/export/prices
   {
     "id": "5447a9cd4bdc2dbd208b4567",
     "types": ["gun", "wearable"],
+    "is_noflea": false,
+    "search_text": "5447a9cd4bdc2dbd208b4567 colt-m4a1-556x45-assault-rifle штурмовая винтовка colt m4a1 5.56x45 colt m4a1 5.56x45 assault rifle 柯尔特 m4a1 5.56x45 卡宾枪 m4a1",
+    "name": {
+      "ru": "Штурмовая винтовка Colt M4A1 5.56x45",
+      "en": "Colt M4A1 5.56x45 assault rifle",
+      "zh": "柯尔特 M4A1 5.56x45 突击步枪"
+    },
+    "shortName": {
+      "ru": "M4A1",
+      "en": "M4A1",
+      "zh": "M4A1"
+    },
     "prices": {
       "base": 18397,
       "avg24": 79935,
@@ -125,9 +139,12 @@ GET /api/v1/export/prices
 ]
 ```
 
-`best_trader_price` — максимальная цена продажи предмета торговцу. Этот endpoint
-делает SQL-запрос только к пяти необходимым колонкам и не читает тяжёлые
-`raw_data`, описания или характеристики предметов.
+`name` и `shortName` всегда содержат русский (`ru`), английский (`en`) и
+китайский (`zh`) варианты с английским fallback. `best_trader_price` —
+максимальная цена продажи предмета торговцу. Этот endpoint не читает тяжёлые
+`raw_data`, описания или характеристики предметов. `is_noflea` показывает
+наличие типа `noFlea`, а `search_text` объединяет ID, slug и названия на всех
+трёх языках в регистронезависимую строку для клиентского поиска.
 
 По умолчанию `items` — объект с ID в качестве ключа. Пример:
 
@@ -183,6 +200,7 @@ X-API-Key: value-from-ADMIN_API_KEY
 | `TARKOV_SOURCE_BASE_URL` | `https://json.tarkov.dev` | Источник данных |
 | `TARKOV_GAME_MODE` | `regular` | `regular`, `pve`, `pvp-season` |
 | `TARKOV_LANGUAGE` | `ru` | Язык перевода |
+| `TARKOV_TRANSLATION_LANGUAGES` | `ru,en,zh` | Переводы названий для экспорта |
 | `SYNC_INTERVAL_SECONDS` | `3600` | Интервал синхронизации |
 | `SYNC_ON_STARTUP` | `true` | Запуск загрузки при старте |
 | `REQUEST_TIMEOUT_SECONDS` | `90` | Таймаут источника |

@@ -1,7 +1,7 @@
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Sequence
 
 import httpx
 
@@ -16,6 +16,9 @@ class SourceBundle:
     traders: list[dict[str, Any]]
     fetched_at: datetime
     source_url: str
+    item_translations: dict[str, dict[str, dict[str, str]]] = field(
+        default_factory=dict
+    )
 
 
 class TarkovDataSource:
@@ -28,11 +31,13 @@ class TarkovDataSource:
         language: str,
         timeout_seconds: float,
         user_agent: str,
+        translation_languages: Sequence[str] = ("ru", "en", "zh"),
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.game_mode = game_mode
         self.language = language
+        self.translation_languages = tuple(dict.fromkeys(translation_languages))
         self.timeout = httpx.Timeout(timeout_seconds)
         self.headers = {
             "Accept": "application/json",
@@ -42,8 +47,8 @@ class TarkovDataSource:
 
     async def fetch(self) -> SourceBundle:
         if self._client is not None:
-            items, traders = await asyncio.gather(
-                self._fetch_dataset(self._client, "items"),
+            items_result, traders = await asyncio.gather(
+                self._fetch_items(self._client),
                 self._fetch_dataset(self._client, "traders"),
             )
         else:
@@ -52,17 +57,55 @@ class TarkovDataSource:
                 headers=self.headers,
                 follow_redirects=True,
             ) as client:
-                items, traders = await asyncio.gather(
-                    self._fetch_dataset(client, "items"),
+                items_result, traders = await asyncio.gather(
+                    self._fetch_items(client),
                     self._fetch_dataset(client, "traders"),
                 )
+
+        items, item_translations = items_result
 
         return SourceBundle(
             items=self._as_records(items, "items"),
             traders=self._as_records(traders, "traders"),
             fetched_at=datetime.now(UTC),
             source_url=f"{self.base_url}/{self.game_mode}/items",
+            item_translations=item_translations,
         )
+
+    async def _fetch_items(
+        self,
+        client: httpx.AsyncClient,
+    ) -> tuple[dict[str, Any], dict[str, dict[str, dict[str, str]]]]:
+        root = f"{self.base_url}/{self.game_mode}/items"
+        languages = tuple(
+            dict.fromkeys(("en", self.language, *self.translation_languages))
+        )
+        payloads = await asyncio.gather(
+            self._get_json(client, root),
+            *(
+                self._get_json(client, f"{root}_{language}")
+                for language in languages
+            ),
+        )
+        base_payload = payloads[0]
+        translation_maps = {
+            language: self._translation_map(payload, f"{root}_{language}")
+            for language, payload in zip(languages, payloads[1:], strict=True)
+        }
+        fallback = translation_maps["en"]
+        localized = translation_maps.get(self.language, fallback)
+
+        data = base_payload.get("data")
+        if not isinstance(data, dict):
+            raise SourceError(f"Invalid payload from {root}: 'data' must be an object")
+
+        localized_data = self._translate_tree(data, localized, fallback)
+        item_translations = self._extract_item_translations(
+            data,
+            translation_maps,
+            fallback,
+        )
+        return localized_data, item_translations
 
     async def _fetch_dataset(
         self,
@@ -142,6 +185,53 @@ class TarkovDataSource:
                 for key, item in value.items()
             }
         return value
+
+    def _extract_item_translations(
+        self,
+        data: dict[str, Any],
+        translation_maps: dict[str, dict[str, str]],
+        fallback: dict[str, str],
+    ) -> dict[str, dict[str, dict[str, str]]]:
+        raw_items = data.get("items")
+        if isinstance(raw_items, dict):
+            records = raw_items.values()
+        elif isinstance(raw_items, list):
+            records = raw_items
+        else:
+            raise SourceError("Invalid 'items' collection in upstream payload")
+
+        result: dict[str, dict[str, dict[str, str]]] = {}
+        for item in records:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or "").strip()
+            if not item_id:
+                continue
+            name_key = item.get("name")
+            short_name_key = item.get("shortName")
+            translations: dict[str, dict[str, str]] = {}
+            for language in self.translation_languages:
+                localized = translation_maps.get(language, fallback)
+                translations[language] = {
+                    "name": self._translate_text(name_key, localized, fallback),
+                    "short_name": self._translate_text(
+                        short_name_key,
+                        localized,
+                        fallback,
+                    ),
+                }
+            result[item_id] = translations
+        return result
+
+    @staticmethod
+    def _translate_text(
+        value: Any,
+        localized: dict[str, str],
+        fallback: dict[str, str],
+    ) -> str:
+        if not isinstance(value, str):
+            return ""
+        return localized.get(value, fallback.get(value, value))
 
     @staticmethod
     def _as_records(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
