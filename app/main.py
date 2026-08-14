@@ -9,6 +9,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
+from app.cache import CacheBackend, RedisResponseCache
+from app.cache_middleware import RedisCacheMiddleware
 from app.config import Settings, get_settings
 from app.database import Database
 from app.models import Item, PriceOffer, PriceSnapshot, SyncRun, Trader
@@ -101,6 +103,7 @@ def create_app(
     settings: Settings | None = None,
     database: Database | None = None,
     source: TarkovDataSource | None = None,
+    cache: CacheBackend | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     database = database or Database(settings.database_url)
@@ -112,6 +115,26 @@ def create_app(
         timeout_seconds=settings.request_timeout_seconds,
         user_agent=settings.user_agent,
     )
+
+    response_cache = cache
+    if response_cache is None and settings.redis_cache_enabled:
+        response_cache = RedisResponseCache(
+            url=settings.redis_url,
+            namespace=(
+                f"{settings.redis_cache_prefix}:"
+                f"{settings.tarkov_game_mode}:{settings.tarkov_language}"
+            ),
+            ttl_seconds=settings.redis_cache_ttl_seconds,
+            max_response_bytes=settings.redis_cache_max_response_bytes,
+            socket_timeout_seconds=settings.redis_socket_timeout_seconds,
+        )
+
+    async def invalidate_response_cache() -> None:
+        if response_cache is None:
+            return
+        deleted = await response_cache.clear()
+        logger.info("Invalidated %s cached API responses", deleted)
+
     sync_service = SyncService(
         source=source,
         repository=repository,
@@ -122,16 +145,21 @@ def create_app(
         language=settings.tarkov_language,
         interval_seconds=settings.sync_interval_seconds,
         sync_on_startup=settings.sync_on_startup,
+        on_success=invalidate_response_cache,
     )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         database.create_schema()
+        if response_cache is not None:
+            await response_cache.ping()
         sync_service.start()
         try:
             yield
         finally:
             await sync_service.stop()
+            if response_cache is not None:
+                await response_cache.close()
             database.dispose()
 
     app = FastAPI(
@@ -143,10 +171,21 @@ def create_app(
         ),
         lifespan=lifespan,
     )
+    if response_cache is not None:
+        app.add_middleware(
+            RedisCacheMiddleware,
+            cache=response_cache,
+            path_prefixes=(
+                "/api/v1/items",
+                "/api/v1/traders",
+                "/api/v1/export/items",
+            ),
+        )
     app.state.settings = settings
     app.state.database = database
     app.state.repository = repository
     app.state.sync_service = sync_service
+    app.state.response_cache = response_cache
 
     def get_session() -> Iterator[Session]:
         with database.session() as session:
@@ -192,6 +231,7 @@ def create_app(
         return HealthResponse(
             status=health_status,  # type: ignore[arg-type]
             database="ok",
+            cache=(response_cache.status if response_cache else "disabled"),
             active_items=item_count,
             sync_running=sync_service.running,
             last_sync=SyncRunOut.model_validate(latest) if latest else None,

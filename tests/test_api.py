@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
+from app.cache import CacheLookup
 from app.config import Settings
 from app.main import create_app
 from app.source import SourceBundle
@@ -82,8 +83,41 @@ class FakeSource:
         return self.bundle
 
 
+class MemoryCache:
+    namespace = "test-cache"
+    max_response_bytes = 25_000_000
+
+    def __init__(self) -> None:
+        self.values: dict[str, bytes] = {}
+        self.clear_count = 0
+
+    @property
+    def status(self) -> str:
+        return "ok"
+
+    async def ping(self) -> bool:
+        return True
+
+    async def get(self, key: str) -> CacheLookup:
+        return CacheLookup(value=self.values.get(key), available=True)
+
+    async def set(self, key: str, value: bytes) -> bool:
+        self.values[key] = value
+        return True
+
+    async def clear(self) -> int:
+        deleted = len(self.values)
+        self.values.clear()
+        self.clear_count += 1
+        return deleted
+
+    async def close(self) -> None:
+        return None
+
+
 def test_sync_search_detail_history_and_export(tmp_path) -> None:
     fake_source = FakeSource()
+    memory_cache = MemoryCache()
     settings = Settings(
         database_url=f"sqlite:///{tmp_path / 'test.db'}",
         tarkov_source_base_url="https://example.test",
@@ -93,10 +127,16 @@ def test_sync_search_detail_history_and_export(tmp_path) -> None:
         sync_interval_seconds=3600,
         admin_api_key="secret",
     )
-    app = create_app(settings=settings, source=fake_source)  # type: ignore[arg-type]
+    app = create_app(
+        settings=settings,
+        source=fake_source,  # type: ignore[arg-type]
+        cache=memory_cache,  # type: ignore[arg-type]
+    )
 
     with TestClient(app) as client:
-        assert client.get("/health").json()["status"] == "starting"
+        initial_health = client.get("/health").json()
+        assert initial_health["status"] == "starting"
+        assert initial_health["cache"] == "ok"
         assert client.post("/api/v1/sync").status_code == 401
 
         sync = client.post(
@@ -106,6 +146,7 @@ def test_sync_search_detail_history_and_export(tmp_path) -> None:
         assert sync.status_code == 200
         assert sync.json()["run"]["items_upserted"] == 1
         assert sync.json()["run"]["snapshots_created"] == 1
+        assert memory_cache.clear_count == 1
         assert client.get("/ready").status_code == 200
 
         response = client.get(
@@ -113,6 +154,7 @@ def test_sync_search_detail_history_and_export(tmp_path) -> None:
             params={"q": "ТЕСТОВЫЙ", "type": "barter"},
         )
         assert response.status_code == 200
+        assert response.headers["x-cache"] == "MISS"
         assert response.json()["meta"]["total"] == 1
         summary = response.json()["items"][0]
         assert summary["prices"]["flea"]["last_low"] == 2000
@@ -121,6 +163,12 @@ def test_sync_search_detail_history_and_export(tmp_path) -> None:
             "trader_name": "Торговец",
             "price_rub": 900,
         }
+        cached_response = client.get(
+            "/api/v1/items",
+            params={"type": "barter", "q": "ТЕСТОВЫЙ"},
+        )
+        assert cached_response.headers["x-cache"] == "HIT"
+        assert cached_response.json() == response.json()
 
         detail = client.get("/api/v1/items/item-1").json()
         assert detail["raw_data"] is None
@@ -140,6 +188,11 @@ def test_sync_search_detail_history_and_export(tmp_path) -> None:
             headers={"X-API-Key": "secret"},
         ).json()
         assert same_sync["run"]["snapshots_created"] == 0
+        assert memory_cache.clear_count == 2
+        assert client.get(
+            "/api/v1/items",
+            params={"q": "ТЕСТОВЫЙ", "type": "barter"},
+        ).headers["x-cache"] == "MISS"
 
         changed = deepcopy(ITEM)
         changed["lastLowPrice"] = 2100
@@ -162,6 +215,7 @@ def test_missing_item_returns_404(tmp_path) -> None:
         database_url=f"sqlite:///{tmp_path / 'empty.db'}",
         sync_on_startup=False,
         sync_interval_seconds=3600,
+        redis_cache_enabled=False,
     )
     app = create_app(settings=settings, source=FakeSource())  # type: ignore[arg-type]
     with TestClient(app) as client:

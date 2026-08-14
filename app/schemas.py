@@ -130,6 +130,7 @@ class SyncResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok", "starting", "degraded"]
     database: Literal["ok"]
+    cache: Literal["ok", "unavailable", "disabled"]
     active_items: int
     sync_running: bool
     last_sync: SyncRunOut | None = None

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 
 from app.repository import Repository, SyncStats
 from app.source import TarkovDataSource
@@ -23,6 +24,7 @@ class SyncService:
         language: str,
         interval_seconds: int,
         sync_on_startup: bool,
+        on_success: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.source = source
         self.repository = repository
@@ -31,6 +33,7 @@ class SyncService:
         self.language = language
         self.interval_seconds = interval_seconds
         self.sync_on_startup = sync_on_startup
+        self.on_success = on_success
         self._lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -58,6 +61,14 @@ class SyncService:
                 game_mode=self.game_mode,
                 language=self.language,
             )
+            if self.on_success is not None:
+                try:
+                    await self.on_success()
+                except Exception:
+                    logger.exception(
+                        "Post-sync cache invalidation failed for run %s",
+                        run_id,
+                    )
             logger.info(
                 "Tarkov sync %s completed: %s items, %s snapshots",
                 run_id,
