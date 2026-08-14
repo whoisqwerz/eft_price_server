@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from sqlalchemy import Select, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.cache import CacheBackend, RedisResponseCache
 from app.cache_middleware import RedisCacheMiddleware
@@ -17,6 +17,8 @@ from app.models import Item, PriceOffer, PriceSnapshot, SyncRun, Trader
 from app.repository import Repository
 from app.schemas import (
     BestTraderPrice,
+    CompactItemExport,
+    CompactPrices,
     ExportMeta,
     ExportResponse,
     FleaPrice,
@@ -178,7 +180,7 @@ def create_app(
             path_prefixes=(
                 "/api/v1/items",
                 "/api/v1/traders",
-                "/api/v1/export/items",
+                "/api/v1/export",
             ),
         )
     app.state.settings = settings
@@ -481,6 +483,29 @@ def create_app(
         items = list(
             session.scalars(
                 select(Item)
+                .options(
+                    load_only(
+                        Item.id,
+                        Item.name,
+                        Item.short_name,
+                        Item.normalized_name,
+                        Item.types,
+                        Item.icon_url,
+                        Item.grid_image_url,
+                        Item.base_price,
+                        Item.last_low_price,
+                        Item.avg_24h_price,
+                        Item.low_24h_price,
+                        Item.high_24h_price,
+                        Item.change_48h,
+                        Item.change_48h_percent,
+                        Item.last_offer_count,
+                        Item.best_trader_sell_price,
+                        Item.best_trader_sell_id,
+                        Item.upstream_updated_at,
+                        Item.last_scan_at,
+                    )
+                )
                 .where(
                     Item.game_mode == settings.tarkov_game_mode,
                     Item.active.is_(True),
@@ -509,6 +534,42 @@ def create_app(
             ),
             items=export_data,
         )
+
+    @app.get(
+        "/api/v1/export/prices",
+        response_model=list[CompactItemExport],
+        tags=["export"],
+        summary="Быстрый компактный экспорт цен всех предметов",
+    )
+    def export_compact_prices(
+        session: Annotated[Session, Depends(get_session)],
+    ) -> list[CompactItemExport]:
+        rows = session.execute(
+            select(
+                Item.id,
+                Item.types,
+                Item.base_price,
+                Item.avg_24h_price,
+                Item.best_trader_sell_price,
+            )
+            .where(
+                Item.game_mode == settings.tarkov_game_mode,
+                Item.active.is_(True),
+            )
+            .order_by(Item.id)
+        )
+        return [
+            CompactItemExport(
+                id=row.id,
+                types=row.types,
+                prices=CompactPrices(
+                    base=row.base_price,
+                    avg24=row.avg_24h_price,
+                    best_trader_price=row.best_trader_sell_price,
+                ),
+            )
+            for row in rows
+        ]
 
     return app
 

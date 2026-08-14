@@ -180,6 +180,22 @@ def test_sync_search_detail_history_and_export(tmp_path) -> None:
         ).json()
         assert raw_detail["raw_data"]["properties"] == {"quality": 10}
 
+        compact = client.get("/api/v1/export/prices")
+        assert compact.status_code == 200
+        assert compact.headers["x-cache"] == "MISS"
+        assert compact.json() == [
+            {
+                "id": "item-1",
+                "types": ["barter"],
+                "prices": {
+                    "base": 1000,
+                    "avg24": 2200,
+                    "best_trader_price": 900,
+                },
+            }
+        ]
+        assert client.get("/api/v1/export/prices").headers["x-cache"] == "HIT"
+
         assert len(client.get("/api/v1/items/item-1/history").json()["points"]) == 1
 
         # An identical refresh must not add a duplicate price point.

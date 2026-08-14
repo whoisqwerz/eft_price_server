@@ -147,3 +147,15 @@ class ExportMeta(BaseModel):
 class ExportResponse(BaseModel):
     meta: ExportMeta
     items: dict[str, ItemSummary] | list[ItemSummary] = Field(default_factory=dict)
+
+
+class CompactPrices(BaseModel):
+    base: int | None = None
+    avg24: int | None = None
+    best_trader_price: int | None = None
+
+
+class CompactItemExport(BaseModel):
+    id: str
+    types: list[str]
+    prices: CompactPrices
